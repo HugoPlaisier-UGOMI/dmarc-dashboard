@@ -118,19 +118,63 @@ function Get-RDnsName {
 
 #endregion
 
+#region ---------- Cost query ------------------------------------------------
+
+function Get-AzureMonthlyCost {
+    # Queries Azure Cost Management for the current month's actual cost on the
+    # resource group. Returns a formatted string like "EUR 0.08" or "N/A".
+    param([string]$ResourceGroup)
+
+    try {
+        $azCtx = Get-AzContext
+        $subId = $azCtx.Subscription.Id
+        $scope = "/subscriptions/$subId/resourceGroups/$ResourceGroup"
+
+        $body = @{
+            type      = 'ActualCost'
+            timeframe = 'MonthToDate'
+            dataset   = @{
+                granularity = 'None'
+                aggregation = @{
+                    totalCost = @{ name = 'Cost'; function = 'Sum' }
+                }
+            }
+        } | ConvertTo-Json -Depth 5
+
+        $resp = Invoke-AzRestMethod -Path "$scope/providers/Microsoft.CostManagement/query?api-version=2023-11-01" `
+            -Method POST -Payload $body
+
+        if ($resp.StatusCode -ne 200) {
+            Write-Warning "Cost API returned $($resp.StatusCode)"
+            return 'N/A'
+        }
+
+        $data = $resp.Content | ConvertFrom-Json
+        if ($data.properties.rows -and $data.properties.rows.Count -gt 0) {
+            $cost     = [math]::Round($data.properties.rows[0][0], 2)
+            $currency = $data.properties.rows[0][1]
+            return "$currency $($cost.ToString('N2'))"
+        }
+        return 'EUR 0.00'
+    } catch {
+        Write-Warning "Cost query failed: $_"
+        return 'N/A'
+    }
+}
+
+#endregion
+
 #region ---------- Time bucketing for charts ---------------------------------
 
-function Get-WeekBuckets {
-    # Returns 7 buckets, Sunday through Saturday of the current UTC week.
+function Get-Last7DaysBuckets {
+    # Returns 7 buckets for the last 7 days (today minus 6 through today).
     param([object[]]$Rows)
 
     $todayUtc = [DateTime]::UtcNow.Date
-    $daysFromSunday = [int]$todayUtc.DayOfWeek   # Sunday=0..Saturday=6
-    $sunday = $todayUtc.AddDays(-$daysFromSunday)
-
     $buckets = @()
-    for ($i = 0; $i -lt 7; $i++) {
-        $dayStart = $sunday.AddDays($i)
+
+    for ($i = 6; $i -ge 0; $i--) {
+        $dayStart = $todayUtc.AddDays(-$i)
         $dayEnd   = $dayStart.AddDays(1)
 
         $compliant = 0
@@ -183,9 +227,11 @@ function Get-MonthBuckets {
     return $buckets
 }
 
+#endregion
+
+#region ---------- Chart rendering -------------------------------------------
+
 function New-BarChart {
-    # Renders a stacked bar chart as inline SVG.
-    # Each bucket needs Label, SubLabel, Compliant, Failed.
     param(
         [Parameter(Mandatory)][object[]]$Buckets,
         [int]$Width  = 720,
@@ -204,7 +250,6 @@ function New-BarChart {
     $maxTotal = ($totals | Measure-Object -Maximum).Maximum
     if (-not $maxTotal -or $maxTotal -eq 0) { $maxTotal = 1 }
 
-    # Round max up to a nice number for axis label
     $niceMax = [Math]::Pow(10, [Math]::Floor([Math]::Log10($maxTotal)))
     $axisMax = [Math]::Ceiling($maxTotal / $niceMax) * $niceMax
 
@@ -215,7 +260,6 @@ function New-BarChart {
     $sb = New-Object System.Text.StringBuilder
     [void]$sb.Append("<svg viewBox='0 0 $Width $Height' xmlns='http://www.w3.org/2000/svg' style='font-family:-apple-system,Segoe UI,Roboto,sans-serif;width:100%;max-width:${Width}px;display:block'>")
 
-    # Horizontal grid lines (4 lines: 25%, 50%, 75%, 100%)
     for ($g = 1; $g -le 4; $g++) {
         $y = $marginTop + ($chartHeight * (1 - $g / 4))
         [void]$sb.Append("<line x1='$marginLeft' y1='$y' x2='$($marginLeft + $chartWidth)' y2='$y' stroke='#e6ecf4' stroke-width='1' />")
@@ -223,10 +267,7 @@ function New-BarChart {
         [void]$sb.Append("<text x='$($marginLeft - 6)' y='$($y + 3)' text-anchor='end' font-size='10' fill='#5b6b7d'>$tickValue</text>")
     }
 
-    # Y axis baseline label
     [void]$sb.Append("<text x='$($marginLeft - 6)' y='$($marginTop + $chartHeight + 3)' text-anchor='end' font-size='10' fill='#5b6b7d'>0</text>")
-
-    # X axis line
     [void]$sb.Append("<line x1='$marginLeft' y1='$($marginTop + $chartHeight)' x2='$($marginLeft + $chartWidth)' y2='$($marginTop + $chartHeight)' stroke='#dde3ec' stroke-width='1' />")
 
     for ($i = 0; $i -lt $Buckets.Count; $i++) {
@@ -247,14 +288,12 @@ function New-BarChart {
             [void]$sb.Append("<rect x='$x' y='$failedY' width='$barWidth' height='$failedHeight' fill='#0072B2' />")
         }
 
-        # Total label above the bar
         if ($total -gt 0) {
             $labelX = $x + ($barWidth / 2)
             $labelY = $failedY - 5
             [void]$sb.Append("<text x='$labelX' y='$labelY' text-anchor='middle' font-size='11' font-weight='600' fill='#1c2733'>$total</text>")
         }
 
-        # X axis labels
         $xLabelX = $x + ($barWidth / 2)
         $xLabelY1 = $marginTop + $chartHeight + 16
         $xLabelY2 = $xLabelY1 + 13
@@ -262,13 +301,88 @@ function New-BarChart {
         [void]$sb.Append("<text x='$xLabelX' y='$xLabelY2' text-anchor='middle' font-size='9' fill='#5b6b7d'>$($b.SubLabel)</text>")
     }
 
-    # Legend in the top-right
     $legendY = 14
     $legendX = $Width - $marginRight - 180
     [void]$sb.Append("<rect x='$legendX' y='$($legendY - 9)' width='11' height='11' fill='#0a7d4f' />")
     [void]$sb.Append("<text x='$($legendX + 16)' y='$legendY' font-size='11' fill='#5b6b7d'>Compliant</text>")
     [void]$sb.Append("<rect x='$($legendX + 92)' y='$($legendY - 9)' width='11' height='11' fill='#0072B2' />")
     [void]$sb.Append("<text x='$($legendX + 108)' y='$legendY' font-size='11' fill='#5b6b7d'>Non-compliant</text>")
+
+    [void]$sb.Append("</svg>")
+    return $sb.ToString()
+}
+
+function New-PieChart {
+    # Renders a donut pie chart as inline SVG for domain compliance breakdown.
+    param(
+        [Parameter(Mandatory)][object[]]$Segments,  # each: Label, Compliant, Failed
+        [int]$Size = 320
+    )
+
+    # Colorblind-safe palette (Wong + extended)
+    $palette = @('#0a7d4f','#1f6feb','#D55E00','#CC79A7','#F0E442','#56B4E9','#E69F00','#009E73')
+
+    $totalAll = ($Segments | ForEach-Object { $_.Messages }) | Measure-Object -Sum | Select-Object -ExpandProperty Sum
+    if (-not $totalAll -or $totalAll -eq 0) { return '' }
+
+    $cx = $Size / 2
+    $cy = $Size / 2
+    $outerR = ($Size / 2) - 10
+    $innerR = $outerR * 0.55   # donut hole
+
+    $sb = New-Object System.Text.StringBuilder
+    [void]$sb.Append("<svg viewBox='0 0 $($Size + 220) $Size' xmlns='http://www.w3.org/2000/svg' style='font-family:-apple-system,Segoe UI,Roboto,sans-serif;width:100%;max-width:$($Size + 220)px;display:block'>")
+
+    $startAngle = -90  # start at top
+    $segIdx = 0
+
+    foreach ($seg in $Segments) {
+        $fraction = $seg.Messages / $totalAll
+        $sweepAngle = $fraction * 360
+
+        if ($sweepAngle -lt 0.5) { $segIdx++; continue }  # skip tiny slices
+
+        $color = $palette[$segIdx % $palette.Count]
+
+        $startRad = $startAngle * [Math]::PI / 180
+        $endRad   = ($startAngle + $sweepAngle) * [Math]::PI / 180
+
+        $x1o = $cx + $outerR * [Math]::Cos($startRad)
+        $y1o = $cy + $outerR * [Math]::Sin($startRad)
+        $x2o = $cx + $outerR * [Math]::Cos($endRad)
+        $y2o = $cy + $outerR * [Math]::Sin($endRad)
+
+        $x1i = $cx + $innerR * [Math]::Cos($endRad)
+        $y1i = $cy + $innerR * [Math]::Sin($endRad)
+        $x2i = $cx + $innerR * [Math]::Cos($startRad)
+        $y2i = $cy + $innerR * [Math]::Sin($startRad)
+
+        $largeArc = if ($sweepAngle -gt 180) { 1 } else { 0 }
+
+        $path = "M $x1o $y1o A $outerR $outerR 0 $largeArc 1 $x2o $y2o L $x1i $y1i A $innerR $innerR 0 $largeArc 0 $x2i $y2i Z"
+        [void]$sb.Append("<path d='$path' fill='$color' />")
+
+        $startAngle += $sweepAngle
+        $segIdx++
+    }
+
+    # Center label: total messages
+    [void]$sb.Append("<text x='$cx' y='$($cy - 6)' text-anchor='middle' font-size='24' font-weight='600' fill='#1c2733'>$totalAll</text>")
+    [void]$sb.Append("<text x='$cx' y='$($cy + 14)' text-anchor='middle' font-size='11' fill='#5b6b7d'>messages</text>")
+
+    # Legend on the right
+    $legendX = $Size + 16
+    $legendY = 24
+    $segIdx = 0
+    foreach ($seg in $Segments) {
+        $color = $palette[$segIdx % $palette.Count]
+        $pct = [math]::Round(($seg.Messages / $totalAll) * 100, 1)
+        [void]$sb.Append("<rect x='$legendX' y='$($legendY - 10)' width='12' height='12' rx='2' fill='$color' />")
+        [void]$sb.Append("<text x='$($legendX + 18)' y='$legendY' font-size='12' fill='#1c2733'>$($seg.HeaderFrom)</text>")
+        [void]$sb.Append("<text x='$($legendX + 18)' y='$($legendY + 14)' font-size='10' fill='#5b6b7d'>$($seg.Messages) msgs ($pct%)</text>")
+        $legendY += 36
+        $segIdx++
+    }
 
     [void]$sb.Append("</svg>")
     return $sb.ToString()
@@ -283,8 +397,10 @@ function New-HtmlReport {
         [Parameter(Mandatory)][object[]]$Rows,
         [Parameter(Mandatory)][string]$Path,
         [hashtable]$IpCache       = @{},
-        [object[]]$WeekBuckets    = @(),
-        [object[]]$MonthBuckets   = @()
+        [object[]]$DayBuckets     = @(),
+        [object[]]$MonthBuckets   = @(),
+        [object[]]$DomainSegments = @(),
+        [string]$MonthlyCost      = 'N/A'
     )
 
     $totalMsgs     = ($Rows | Measure-Object MessageCount -Sum).Sum
@@ -335,15 +451,17 @@ function New-HtmlReport {
     $nowAmsReport = [TimeZoneInfo]::ConvertTimeFromUtc([DateTime]::UtcNow, $amsZone)
     $amsLabelReport = if ($amsZone.IsDaylightSavingTime($nowAmsReport)) { 'CEST' } else { 'CET' }
     $generated = $nowAmsReport.ToString('yyyy-MM-dd HH:mm') + " $amsLabelReport"
+
     $rangeMin  = ($Rows.BeginUtc | Sort-Object | Select-Object -First 1)
     $rangeMax  = ($Rows.EndUtc   | Sort-Object -Descending | Select-Object -First 1)
 
     $statusColor = if ($compliancePct -ge 95) { '#0a7d4f' }
                    elseif ($compliancePct -ge 80) { '#1f6feb' }
-                   else { '#8a2a2a' }
+                   else { '#0072B2' }
 
-    $weekChartSvg  = if ($WeekBuckets.Count  -gt 0) { New-BarChart -Buckets $WeekBuckets  -Width 720 -Height 280 } else { '' }
-    $monthChartSvg = if ($MonthBuckets.Count -gt 0) { New-BarChart -Buckets $MonthBuckets -Width 720 -Height 280 } else { '' }
+    $dayChartSvg   = if ($DayBuckets.Count   -gt 0) { New-BarChart -Buckets $DayBuckets   -Width 720 -Height 280 } else { '' }
+    $monthChartSvg = if ($MonthBuckets.Count  -gt 0) { New-BarChart -Buckets $MonthBuckets -Width 720 -Height 280 } else { '' }
+    $pieChartSvg   = if ($DomainSegments.Count -gt 0) { New-PieChart -Segments $DomainSegments -Size 320 } else { '' }
 
     $html = @"
 <!DOCTYPE html>
@@ -364,20 +482,21 @@ function New-HtmlReport {
   h1 { margin:0 0 4px 0; font-size:24px; }
   h2 { margin:28px 0 10px; font-size:16px; border-bottom:2px solid var(--border); padding-bottom:6px; }
   .sub { color:var(--muted); font-size:13px; margin-bottom:20px; }
-  .cards { display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr));
+  .cards { display:grid; grid-template-columns:repeat(auto-fit, minmax(160px, 1fr));
            gap:14px; margin-bottom:8px; }
   .card { background:var(--card); border:1px solid var(--border); border-radius:10px;
           padding:14px 16px; }
   .card .label { font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.5px; }
   .card .value { font-size:26px; font-weight:600; margin-top:4px; }
   .pct { color:$statusColor; }
+  .cost { color:var(--muted); font-size:18px; }
   .chart-card { background:var(--card); border:1px solid var(--border); border-radius:10px;
                 padding:18px 20px; margin-top:14px; }
   .chart-card h3 { margin:0 0 8px 0; font-size:14px; color:var(--ink); font-weight:600; }
   table { width:100%; border-collapse:collapse; background:var(--card);
           border:1px solid var(--border); border-radius:8px; overflow:hidden; font-size:13px; }
   th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--border); vertical-align:top; }
-  th { background:#eef2f8; font-weight:600; }
+  th { background:#eef2f8; font-weight:600; position:sticky; top:0; z-index:1; }
   tr:nth-child(even) td { background:var(--row); }
   td.num, th.num { text-align:right; font-variant-numeric: tabular-nums; }
   .ok   { color:var(--accent2); font-weight:600; }
@@ -386,6 +505,8 @@ function New-HtmlReport {
   .ip-host { font-size:11px; color:var(--muted); margin-top:2px; word-break:break-all; }
   .bar { background:#e6ecf4; border-radius:4px; height:8px; overflow:hidden; }
   .bar > span { display:block; height:100%; background:var(--accent); }
+  .scroll-table { max-height:440px; overflow-y:auto; border:1px solid var(--border); border-radius:8px; }
+  .scroll-table table { border:none; }
 </style>
 </head>
 <body>
@@ -401,11 +522,17 @@ function New-HtmlReport {
     <div class="card"><div class="label">DMARC compliant</div><div class="value ok">$($compliantMsgs.ToString('N0'))</div></div>
     <div class="card"><div class="label">Non-compliant</div><div class="value fail">$($failMsgs.ToString('N0'))</div></div>
     <div class="card"><div class="label">Compliance rate</div><div class="value pct">$compliancePct%</div></div>
+    <div class="card"><div class="label">Azure cost (this month)</div><div class="value cost">$MonthlyCost</div></div>
   </div>
 
   <div class="chart-card">
-    <h3>This week (Sunday &ndash; Saturday, UTC)</h3>
-    $weekChartSvg
+    <h3>Last 7 days</h3>
+    $dayChartSvg
+  </div>
+
+  <div class="chart-card">
+    <h3>Messages by domain</h3>
+    $pieChartSvg
   </div>
 
   <div class="chart-card">
@@ -414,6 +541,7 @@ function New-HtmlReport {
   </div>
 
   <h2>Compliance by sending source (IP)</h2>
+  <div class="scroll-table">
   <table>
     <thead><tr>
       <th>Source IP / Hostname</th><th>Header-From domains</th>
@@ -446,6 +574,7 @@ function New-HtmlReport {
     $html += @"
     </tbody>
   </table>
+  </div>
 
   <h2>Compliance by Header-From domain</h2>
   <table>
@@ -517,7 +646,6 @@ function New-HtmlReport {
   <p class="small" style="margin-top:24px">
     DMARC compliance = aligned DKIM pass OR aligned SPF pass (per RFC 7489).
     Dashboard refreshes hourly from DMARC aggregate reports in the shared mailbox.
-    Time-series charts bucket messages by the report's date_range start (UTC).
   </p>
 </body>
 </html>
@@ -555,7 +683,7 @@ foreach ($blob in $allBlobs) {
     if ($blob.Name -notmatch '\.(xml|gz|zip)$') { $skipped++; continue }
 
     # Determine source container
-    $isRaw = $blob.Name -in $rawBlobs.Name -and $blob.ICloudBlob.Container.Name -eq $rawContainer
+    $isRaw = $blob.ICloudBlob.Container.Name -eq $rawContainer
     $blobContainer = if ($isRaw) { $rawContainer } else { $archiveContainer }
 
     $tmp = Join-Path $env:TEMP ([guid]::NewGuid().ToString('N') + [IO.Path]::GetExtension($blob.Name))
@@ -612,12 +740,28 @@ Write-Host "Resolved $resolved of $($uniqueIps.Count) IPs to hostnames."
 # Build time-series buckets for the charts.
 Write-Host "Building time-series buckets..."
 $rowsArray = $allRows.ToArray()
-$weekBuckets  = Get-WeekBuckets  -Rows $rowsArray
-$monthBuckets = Get-MonthBuckets -Rows $rowsArray
+$dayBuckets   = Get-Last7DaysBuckets -Rows $rowsArray
+$monthBuckets = Get-MonthBuckets     -Rows $rowsArray
+
+# Domain segments for the pie chart (same data as byDomain table)
+$domainSegments = $rowsArray | Group-Object HeaderFrom | ForEach-Object {
+    $g   = $_.Group
+    $tot = ($g | Measure-Object MessageCount -Sum).Sum
+    [pscustomobject]@{
+        HeaderFrom = $_.Name
+        Messages   = $tot
+    }
+} | Sort-Object Messages -Descending
+
+# Azure cost for this month
+Write-Host "Querying Azure costs..."
+$monthlyCost = Get-AzureMonthlyCost -ResourceGroup 'rg-dmarc'
+Write-Host "Monthly cost: $monthlyCost"
 
 $outHtml = Join-Path $env:TEMP 'index.html'
 New-HtmlReport -Rows $rowsArray -Path $outHtml -IpCache $ipCache `
-    -WeekBuckets $weekBuckets -MonthBuckets $monthBuckets
+    -DayBuckets $dayBuckets -MonthBuckets $monthBuckets `
+    -DomainSegments $domainSegments -MonthlyCost $monthlyCost
 
 Set-AzStorageBlobContent -File $outHtml -Container $dashboardContainer -Blob 'index.html' `
     -Context $ctx -Properties @{ ContentType = 'text/html; charset=utf-8' } -Force | Out-Null
