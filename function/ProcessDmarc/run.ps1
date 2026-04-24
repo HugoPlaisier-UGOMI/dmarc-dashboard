@@ -1,6 +1,8 @@
 using namespace System.IO
 param($Timer)
 $ErrorActionPreference = 'Stop'
+# Force dot-decimal notation for SVG coordinate output (Dutch locale uses commas)
+[System.Threading.Thread]::CurrentThread.CurrentCulture = [System.Globalization.CultureInfo]::InvariantCulture
 $amsZone = [TimeZoneInfo]::FindSystemTimeZoneById('W. Europe Standard Time')
 $nowAms  = [TimeZoneInfo]::ConvertTimeFromUtc([DateTime]::UtcNow, $amsZone)
 $amsLabel = if ($amsZone.IsDaylightSavingTime($nowAms)) { 'CEST' } else { 'CET' }
@@ -102,27 +104,31 @@ function New-BarChart {
     $totals=$Buckets|ForEach-Object{$_.Compliant+$_.Failed}
     $maxT=($totals|Measure-Object -Maximum).Maximum
     if(-not $maxT -or $maxT-eq0){$maxT=4}
-    # Round up to multiple of 4 so grid lines are always clean integers
     $aM=[Math]::Ceiling($maxT/4)*4
-    $sw=$cw/$Buckets.Count;$bw=[Math]::Min(60,$sw*0.65);$bo=($sw-$bw)/2
+    $sw=[Math]::Round($cw/$Buckets.Count,2)
+    $bw=[int][Math]::Round([Math]::Min(60,$sw*0.65))
+    $bo=[int][Math]::Round(($sw-$bw)/2)
     $sb=New-Object System.Text.StringBuilder
     [void]$sb.Append("<svg viewBox='0 0 $Width $Height' xmlns='http://www.w3.org/2000/svg' style='font-family:-apple-system,Segoe UI,Roboto,sans-serif;width:100%;max-width:${Width}px;display:block'>")
     for($g=1;$g-le4;$g++){
-        $y=$mt+($ch*(1-$g/4));$tv=$aM*$g/4
+        $y=[int][Math]::Round($mt+($ch*(1-$g/4))); $tv=[int]($aM*$g/4)
         [void]$sb.Append("<line x1='$ml' y1='$y' x2='$($ml+$cw)' y2='$y' stroke='#e6ecf4' stroke-width='1'/>")
         [void]$sb.Append("<text x='$($ml-6)' y='$($y+3)' text-anchor='end' font-size='10' fill='#5b6b7d'>$tv</text>")
     }
     [void]$sb.Append("<text x='$($ml-6)' y='$($mt+$ch+3)' text-anchor='end' font-size='10' fill='#5b6b7d'>0</text>")
     [void]$sb.Append("<line x1='$ml' y1='$($mt+$ch)' x2='$($ml+$cw)' y2='$($mt+$ch)' stroke='#dde3ec' stroke-width='1'/>")
     for($i=0;$i-lt$Buckets.Count;$i++){
-        $b=$Buckets[$i];$total=$b.Compliant+$b.Failed;$x=$ml+($i*$sw)+$bo
-        $cH=if($aM-gt0){($b.Compliant/$aM)*$ch}else{0};$fH=if($aM-gt0){($b.Failed/$aM)*$ch}else{0}
-        $cY=$mt+$ch-$cH;$fY=$cY-$fH
+        $b=$Buckets[$i]; $total=$b.Compliant+$b.Failed
+        $x=[int][Math]::Round($ml+($i*$sw)+$bo)
+        $cH=[int][Math]::Round($(if($aM-gt0){($b.Compliant/$aM)*$ch}else{0}))
+        $fH=[int][Math]::Round($(if($aM-gt0){($b.Failed/$aM)*$ch}else{0}))
+        $cY=$mt+$ch-$cH; $fY=$cY-$fH
+        $xc=[int][Math]::Round($x+$bw/2)
         if($b.Compliant-gt0){[void]$sb.Append("<rect x='$x' y='$cY' width='$bw' height='$cH' fill='#0a7d4f'/>")}
         if($b.Failed-gt0){[void]$sb.Append("<rect x='$x' y='$fY' width='$bw' height='$fH' fill='#0072B2'/>")}
-        if($total-gt0){[void]$sb.Append("<text x='$($x+$bw/2)' y='$($fY-5)' text-anchor='middle' font-size='11' font-weight='600' fill='#1c2733'>$total</text>")}
-        [void]$sb.Append("<text x='$($x+$bw/2)' y='$($mt+$ch+16)' text-anchor='middle' font-size='11' fill='#1c2733'>$($b.Label)</text>")
-        [void]$sb.Append("<text x='$($x+$bw/2)' y='$($mt+$ch+29)' text-anchor='middle' font-size='9' fill='#5b6b7d'>$($b.SubLabel)</text>")
+        if($total-gt0){[void]$sb.Append("<text x='$xc' y='$($fY-5)' text-anchor='middle' font-size='11' font-weight='600' fill='#1c2733'>$total</text>")}
+        [void]$sb.Append("<text x='$xc' y='$($mt+$ch+16)' text-anchor='middle' font-size='11' fill='#1c2733'>$($b.Label)</text>")
+        [void]$sb.Append("<text x='$xc' y='$($mt+$ch+29)' text-anchor='middle' font-size='9' fill='#5b6b7d'>$($b.SubLabel)</text>")
     }
     $lx=$Width-$mr-180;$ly=14
     [void]$sb.Append("<rect x='$lx' y='$($ly-9)' width='11' height='11' fill='#0a7d4f'/><text x='$($lx+16)' y='$ly' font-size='11' fill='#5b6b7d'>Compliant</text>")
