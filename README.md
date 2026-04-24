@@ -155,3 +155,5 @@ Not worth it for daily DMARC reports.
   plain internet with the same security guarantees for this use case.
 - **Logic App Standard only**: can't parse gzipped XML cleanly without
   expensive inline code actions; worse, ~€150/mo baseline.
+
+<!-- Deployed via GitHub Actions -->
