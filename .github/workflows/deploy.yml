@@ -1,0 +1,72 @@
+name: Deploy DMARC Dashboard
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'infra/**'
+      - 'function/**'
+      - '.github/workflows/**'
+  workflow_dispatch:
+
+# OIDC federated credentials need id-token: write
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AZURE_RESOURCE_GROUP: rg-dmarc
+  NAME_PREFIX: dmarc
+  BICEP_FILE: infra/main.bicep
+  FUNCTION_PATH: function
+
+jobs:
+  deploy:
+    name: Deploy infra + function
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy Bicep
+        id: bicep
+        uses: azure/arm-deploy@v2
+        with:
+          resourceGroupName: ${{ env.AZURE_RESOURCE_GROUP }}
+          template: ${{ env.BICEP_FILE }}
+          parameters: >-
+            namePrefix=${{ env.NAME_PREFIX }}
+            entraClientId=${{ secrets.ENTRA_CLIENT_ID }}
+          failOnStdErr: false
+
+      - name: Show Bicep outputs
+        run: |
+          echo "Function App:  ${{ steps.bicep.outputs.functionAppName }}"
+          echo "Dashboard URL: ${{ steps.bicep.outputs.dashboardUrl }}"
+
+      - name: Setup Node.js (for Functions Core Tools)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Azure Functions Core Tools
+        run: npm install -g azure-functions-core-tools@4 --unsafe-perm true
+
+      - name: Publish Function App
+        working-directory: ${{ env.FUNCTION_PATH }}
+        run: |
+          func azure functionapp publish ${{ steps.bicep.outputs.functionAppName }} --powershell
+
+      - name: Summary
+        run: |
+          echo "### :rocket: Deploy complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Dashboard: ${{ steps.bicep.outputs.dashboardUrl }}" >> $GITHUB_STEP_SUMMARY
