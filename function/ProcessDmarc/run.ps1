@@ -121,8 +121,6 @@ function Get-RDnsName {
 #region ---------- Cost query ------------------------------------------------
 
 function Get-AzureMonthlyCost {
-    # Queries Azure Cost Management for the current month's actual cost on the
-    # resource group. Returns a formatted string like "EUR 0.08" or "N/A".
     param([string]$ResourceGroup)
 
     try {
@@ -167,7 +165,6 @@ function Get-AzureMonthlyCost {
 #region ---------- Time bucketing for charts ---------------------------------
 
 function Get-Last7DaysBuckets {
-    # Returns 7 buckets for the last 7 days (today minus 6 through today).
     param([object[]]$Rows)
 
     $todayUtc = [DateTime]::UtcNow.Date
@@ -197,7 +194,6 @@ function Get-Last7DaysBuckets {
 }
 
 function Get-MonthBuckets {
-    # Returns 12 buckets, the last 12 months ending with the current month.
     param([object[]]$Rows)
 
     $todayUtc = [DateTime]::UtcNow.Date
@@ -313,13 +309,12 @@ function New-BarChart {
 }
 
 function New-PieChart {
-    # Renders a donut pie chart as inline SVG for domain compliance breakdown.
+    # Donut pie chart for domain message distribution.
     param(
-        [Parameter(Mandatory)][object[]]$Segments,  # each: Label, Compliant, Failed
-        [int]$Size = 320
+        [Parameter(Mandatory)][object[]]$Segments,
+        [int]$Size = 280
     )
 
-    # Colorblind-safe palette (Wong + extended)
     $palette = @('#0a7d4f','#1f6feb','#D55E00','#CC79A7','#F0E442','#56B4E9','#E69F00','#009E73')
 
     $totalAll = ($Segments | ForEach-Object { $_.Messages }) | Measure-Object -Sum | Select-Object -ExpandProperty Sum
@@ -328,19 +323,19 @@ function New-PieChart {
     $cx = $Size / 2
     $cy = $Size / 2
     $outerR = ($Size / 2) - 10
-    $innerR = $outerR * 0.55   # donut hole
+    $innerR = $outerR * 0.55
 
     $sb = New-Object System.Text.StringBuilder
-    [void]$sb.Append("<svg viewBox='0 0 $($Size + 220) $Size' xmlns='http://www.w3.org/2000/svg' style='font-family:-apple-system,Segoe UI,Roboto,sans-serif;width:100%;max-width:$($Size + 220)px;display:block'>")
+    [void]$sb.Append("<svg viewBox='0 0 $Size $Size' xmlns='http://www.w3.org/2000/svg' style='font-family:-apple-system,Segoe UI,Roboto,sans-serif;width:100%;max-width:${Size}px;display:block'>")
 
-    $startAngle = -90  # start at top
+    $startAngle = -90
     $segIdx = 0
 
     foreach ($seg in $Segments) {
         $fraction = $seg.Messages / $totalAll
         $sweepAngle = $fraction * 360
 
-        if ($sweepAngle -lt 0.5) { $segIdx++; continue }  # skip tiny slices
+        if ($sweepAngle -lt 0.5) { $segIdx++; continue }
 
         $color = $palette[$segIdx % $palette.Count]
 
@@ -366,23 +361,89 @@ function New-PieChart {
         $segIdx++
     }
 
-    # Center label: total messages
-    [void]$sb.Append("<text x='$cx' y='$($cy - 6)' text-anchor='middle' font-size='24' font-weight='600' fill='#1c2733'>$totalAll</text>")
-    [void]$sb.Append("<text x='$cx' y='$($cy + 14)' text-anchor='middle' font-size='11' fill='#5b6b7d'>messages</text>")
+    # Center label
+    [void]$sb.Append("<text x='$cx' y='$($cy - 6)' text-anchor='middle' font-size='22' font-weight='600' fill='#1c2733'>$totalAll</text>")
+    [void]$sb.Append("<text x='$cx' y='$($cy + 12)' text-anchor='middle' font-size='10' fill='#5b6b7d'>messages</text>")
 
-    # Legend on the right
-    $legendX = $Size + 16
-    $legendY = 24
-    $segIdx = 0
-    foreach ($seg in $Segments) {
-        $color = $palette[$segIdx % $palette.Count]
-        $pct = [math]::Round(($seg.Messages / $totalAll) * 100, 1)
-        [void]$sb.Append("<rect x='$legendX' y='$($legendY - 10)' width='12' height='12' rx='2' fill='$color' />")
-        [void]$sb.Append("<text x='$($legendX + 18)' y='$legendY' font-size='12' fill='#1c2733'>$($seg.HeaderFrom)</text>")
-        [void]$sb.Append("<text x='$($legendX + 18)' y='$($legendY + 14)' font-size='10' fill='#5b6b7d'>$($seg.Messages) msgs ($pct%)</text>")
-        $legendY += 36
-        $segIdx++
+    [void]$sb.Append("</svg>")
+    return $sb.ToString()
+}
+
+function New-CompliancePieChart {
+    # Small donut chart showing compliant vs non-compliant for a single domain.
+    param(
+        [string]$Domain,
+        [int]$Compliant,
+        [int]$Failed,
+        [int]$Size = 200
+    )
+
+    $total = $Compliant + $Failed
+    if ($total -eq 0) { return '' }
+
+    $pct = [math]::Round(($Compliant / $total) * 100, 1)
+
+    $cx = $Size / 2
+    $cy = $Size / 2
+    $outerR = ($Size / 2) - 8
+    $innerR = $outerR * 0.6
+
+    $sb = New-Object System.Text.StringBuilder
+    [void]$sb.Append("<svg viewBox='0 0 $Size $Size' xmlns='http://www.w3.org/2000/svg' style='font-family:-apple-system,Segoe UI,Roboto,sans-serif;width:100%;max-width:${Size}px;display:block'>")
+
+    if ($Failed -eq 0) {
+        # Full circle - all compliant
+        [void]$sb.Append("<circle cx='$cx' cy='$cy' r='$outerR' fill='#0a7d4f' />")
+        [void]$sb.Append("<circle cx='$cx' cy='$cy' r='$innerR' fill='white' />")
+    } elseif ($Compliant -eq 0) {
+        # Full circle - all non-compliant
+        [void]$sb.Append("<circle cx='$cx' cy='$cy' r='$outerR' fill='#0072B2' />")
+        [void]$sb.Append("<circle cx='$cx' cy='$cy' r='$innerR' fill='white' />")
+    } else {
+        # Two segments
+        $compliantAngle = ($Compliant / $total) * 360
+        $startAngle = -90
+
+        # Compliant arc
+        $startRad = $startAngle * [Math]::PI / 180
+        $endRad   = ($startAngle + $compliantAngle) * [Math]::PI / 180
+        $largeArc = if ($compliantAngle -gt 180) { 1 } else { 0 }
+
+        $x1o = $cx + $outerR * [Math]::Cos($startRad)
+        $y1o = $cy + $outerR * [Math]::Sin($startRad)
+        $x2o = $cx + $outerR * [Math]::Cos($endRad)
+        $y2o = $cy + $outerR * [Math]::Sin($endRad)
+        $x1i = $cx + $innerR * [Math]::Cos($endRad)
+        $y1i = $cy + $innerR * [Math]::Sin($endRad)
+        $x2i = $cx + $innerR * [Math]::Cos($startRad)
+        $y2i = $cy + $innerR * [Math]::Sin($startRad)
+
+        $path1 = "M $x1o $y1o A $outerR $outerR 0 $largeArc 1 $x2o $y2o L $x1i $y1i A $innerR $innerR 0 $largeArc 0 $x2i $y2i Z"
+        [void]$sb.Append("<path d='$path1' fill='#0a7d4f' />")
+
+        # Non-compliant arc
+        $failedAngle = 360 - $compliantAngle
+        $startAngle2 = -90 + $compliantAngle
+        $startRad2 = $startAngle2 * [Math]::PI / 180
+        $endRad2   = ($startAngle2 + $failedAngle) * [Math]::PI / 180
+        $largeArc2 = if ($failedAngle -gt 180) { 1 } else { 0 }
+
+        $x1o2 = $cx + $outerR * [Math]::Cos($startRad2)
+        $y1o2 = $cy + $outerR * [Math]::Sin($startRad2)
+        $x2o2 = $cx + $outerR * [Math]::Cos($endRad2)
+        $y2o2 = $cy + $outerR * [Math]::Sin($endRad2)
+        $x1i2 = $cx + $innerR * [Math]::Cos($endRad2)
+        $y1i2 = $cy + $innerR * [Math]::Sin($endRad2)
+        $x2i2 = $cx + $innerR * [Math]::Cos($startRad2)
+        $y2i2 = $cy + $innerR * [Math]::Sin($startRad2)
+
+        $path2 = "M $x1o2 $y1o2 A $outerR $outerR 0 $largeArc2 1 $x2o2 $y2o2 L $x1i2 $y1i2 A $innerR $innerR 0 $largeArc2 0 $x2i2 $y2i2 Z"
+        [void]$sb.Append("<path d='$path2' fill='#0072B2' />")
     }
+
+    # Center: compliance percentage
+    [void]$sb.Append("<text x='$cx' y='$($cy - 4)' text-anchor='middle' font-size='20' font-weight='600' fill='#1c2733'>$pct%</text>")
+    [void]$sb.Append("<text x='$cx' y='$($cy + 12)' text-anchor='middle' font-size='9' fill='#5b6b7d'>compliant</text>")
 
     [void]$sb.Append("</svg>")
     return $sb.ToString()
@@ -400,6 +461,7 @@ function New-HtmlReport {
         [object[]]$DayBuckets     = @(),
         [object[]]$MonthBuckets   = @(),
         [object[]]$DomainSegments = @(),
+        [object[]]$DomainCompliance = @(),
         [string]$MonthlyCost      = 'N/A'
     )
 
@@ -461,7 +523,32 @@ function New-HtmlReport {
 
     $dayChartSvg   = if ($DayBuckets.Count   -gt 0) { New-BarChart -Buckets $DayBuckets   -Width 720 -Height 280 } else { '' }
     $monthChartSvg = if ($MonthBuckets.Count  -gt 0) { New-BarChart -Buckets $MonthBuckets -Width 720 -Height 280 } else { '' }
-    $pieChartSvg   = if ($DomainSegments.Count -gt 0) { New-PieChart -Segments $DomainSegments -Size 320 } else { '' }
+    $msgPieSvg     = if ($DomainSegments.Count -gt 0) { New-PieChart -Segments $DomainSegments -Size 280 } else { '' }
+
+    # Per-domain compliance pie charts
+    $domainPiesHtml = ''
+    foreach ($dc in $DomainCompliance) {
+        $pieSvg = New-CompliancePieChart -Domain $dc.HeaderFrom -Compliant $dc.Compliant -Failed $dc.Failed -Size 200
+        $domainPiesHtml += @"
+      <div class="pie-item">
+        <div class="pie-title">$($dc.HeaderFrom)</div>
+        $pieSvg
+        <div class="pie-sub">$($dc.Compliant) compliant / $($dc.Failed) failed</div>
+      </div>
+"@
+    }
+
+    # Build legend for the messages-by-domain pie chart
+    $palette = @('#0a7d4f','#1f6feb','#D55E00','#CC79A7','#F0E442','#56B4E9','#E69F00','#009E73')
+    $totalAll = ($DomainSegments | ForEach-Object { $_.Messages }) | Measure-Object -Sum | Select-Object -ExpandProperty Sum
+    $legendHtml = ''
+    $segIdx = 0
+    foreach ($seg in $DomainSegments) {
+        $color = $palette[$segIdx % $palette.Count]
+        $pctSeg = if ($totalAll -gt 0) { [math]::Round(($seg.Messages / $totalAll) * 100, 1) } else { 0 }
+        $legendHtml += "<div style='display:flex;align-items:center;gap:6px;margin-bottom:4px'><span style='display:inline-block;width:12px;height:12px;border-radius:2px;background:$color;flex-shrink:0'></span><span style='font-size:12px'><strong>$($seg.HeaderFrom)</strong> $($seg.Messages) msgs ($pctSeg%)</span></div>"
+        $segIdx++
+    }
 
     $html = @"
 <!DOCTYPE html>
@@ -493,6 +580,12 @@ function New-HtmlReport {
   .chart-card { background:var(--card); border:1px solid var(--border); border-radius:10px;
                 padding:18px 20px; margin-top:14px; }
   .chart-card h3 { margin:0 0 8px 0; font-size:14px; color:var(--ink); font-weight:600; }
+  .pie-row { display:flex; flex-wrap:wrap; gap:20px; align-items:flex-start; }
+  .pie-item { text-align:center; flex:0 0 auto; min-width:200px; }
+  .pie-item-main { text-align:center; flex:0 0 auto; min-width:280px; }
+  .pie-title { font-size:13px; font-weight:600; color:var(--ink); margin-bottom:6px; }
+  .pie-sub { font-size:11px; color:var(--muted); margin-top:4px; }
+  .pie-legend { display:flex; flex-direction:column; justify-content:center; min-width:160px; }
   table { width:100%; border-collapse:collapse; background:var(--card);
           border:1px solid var(--border); border-radius:8px; overflow:hidden; font-size:13px; }
   th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--border); vertical-align:top; }
@@ -531,8 +624,17 @@ function New-HtmlReport {
   </div>
 
   <div class="chart-card">
-    <h3>Messages by domain</h3>
-    $pieChartSvg
+    <h3>Domain overview</h3>
+    <div class="pie-row">
+      <div class="pie-item-main">
+        <div class="pie-title">Messages by domain</div>
+        $msgPieSvg
+      </div>
+      <div class="pie-legend">
+        $legendHtml
+      </div>
+      $domainPiesHtml
+    </div>
   </div>
 
   <div class="chart-card">
@@ -675,14 +777,13 @@ $allBlobs     = $rawBlobs + $archiveBlobs
 Write-Host "Found $($rawBlobs.Count) in raw, $($archiveBlobs.Count) in archive."
 
 $allRows = New-Object System.Collections.Generic.List[object]
-$processedBlobs = New-Object System.Collections.Generic.List[object]  # track raw blobs for archiving
+$processedBlobs = New-Object System.Collections.Generic.List[object]
 $processed = 0
 $skipped = 0
 
 foreach ($blob in $allBlobs) {
     if ($blob.Name -notmatch '\.(xml|gz|zip)$') { $skipped++; continue }
 
-    # Determine source container
     $isRaw = $blob.ICloudBlob.Container.Name -eq $rawContainer
     $blobContainer = if ($isRaw) { $rawContainer } else { $archiveContainer }
 
@@ -703,7 +804,6 @@ foreach ($blob in $allBlobs) {
                 }
             }
         }
-        # Only track raw blobs for archiving (archive blobs stay where they are)
         if ($isRaw) {
             if (-not $blobYear) { $blobYear = (Get-Date).ToUniversalTime().Year }
             $processedBlobs.Add(@{ Name = $blob.Name; Year = $blobYear }) | Out-Null
@@ -727,7 +827,7 @@ if ($allRows.Count -eq 0) {
     return
 }
 
-# Reverse DNS lookups for all unique source IPs.
+# Reverse DNS lookups
 Write-Host "Resolving reverse DNS for source IPs..."
 $ipCache = @{}
 $uniqueIps = $allRows.SourceIP | Sort-Object -Unique
@@ -737,23 +837,33 @@ foreach ($ip in $uniqueIps) {
 $resolved = ($ipCache.Values | Where-Object { $_ }).Count
 Write-Host "Resolved $resolved of $($uniqueIps.Count) IPs to hostnames."
 
-# Build time-series buckets for the charts.
-Write-Host "Building time-series buckets..."
+# Build chart data
+Write-Host "Building chart data..."
 $rowsArray = $allRows.ToArray()
 $dayBuckets   = Get-Last7DaysBuckets -Rows $rowsArray
 $monthBuckets = Get-MonthBuckets     -Rows $rowsArray
 
-# Domain segments for the pie chart (same data as byDomain table)
+# Domain segments for messages-by-domain pie chart
 $domainSegments = $rowsArray | Group-Object HeaderFrom | ForEach-Object {
     $g   = $_.Group
     $tot = ($g | Measure-Object MessageCount -Sum).Sum
+    [pscustomobject]@{ HeaderFrom = $_.Name; Messages = $tot }
+} | Sort-Object Messages -Descending
+
+# Per-domain compliance for individual pie charts
+$domainCompliance = $rowsArray | Group-Object HeaderFrom | ForEach-Object {
+    $g    = $_.Group
+    $tot  = ($g | Measure-Object MessageCount -Sum).Sum
+    $pass = ($g | Where-Object Compliant | Measure-Object MessageCount -Sum).Sum
     [pscustomobject]@{
         HeaderFrom = $_.Name
         Messages   = $tot
+        Compliant  = $pass
+        Failed     = $tot - $pass
     }
 } | Sort-Object Messages -Descending
 
-# Azure cost for this month
+# Azure cost
 Write-Host "Querying Azure costs..."
 $monthlyCost = Get-AzureMonthlyCost -ResourceGroup 'rg-dmarc'
 Write-Host "Monthly cost: $monthlyCost"
@@ -761,7 +871,8 @@ Write-Host "Monthly cost: $monthlyCost"
 $outHtml = Join-Path $env:TEMP 'index.html'
 New-HtmlReport -Rows $rowsArray -Path $outHtml -IpCache $ipCache `
     -DayBuckets $dayBuckets -MonthBuckets $monthBuckets `
-    -DomainSegments $domainSegments -MonthlyCost $monthlyCost
+    -DomainSegments $domainSegments -DomainCompliance $domainCompliance `
+    -MonthlyCost $monthlyCost
 
 Set-AzStorageBlobContent -File $outHtml -Container $dashboardContainer -Blob 'index.html' `
     -Context $ctx -Properties @{ ContentType = 'text/html; charset=utf-8' } -Force | Out-Null
@@ -770,24 +881,21 @@ Remove-Item -LiteralPath $outHtml -Force -ErrorAction SilentlyContinue
 
 Write-Host "Dashboard published to $dashboardContainer/index.html"
 
-# Archive: move successfully processed blobs from raw/ to archive/YYYY/
+# Archive processed raw blobs
 if ($processedBlobs.Count -gt 0) {
     Write-Host "Archiving $($processedBlobs.Count) blobs from raw ..."
     $archived = 0
     foreach ($pb in $processedBlobs) {
         $destName = "$($pb.Year)/$($pb.Name)"
         try {
-            # Copy to archive container with year prefix
             Start-AzStorageBlobCopy `
                 -SrcContainer $rawContainer -SrcBlob $pb.Name `
                 -DestContainer $archiveContainer -DestBlob $destName `
                 -Context $ctx -Force | Out-Null
 
-            # Wait for copy to complete (should be instant for small blobs)
             Get-AzStorageBlobCopyState -Container $archiveContainer -Blob $destName `
                 -Context $ctx -WaitForComplete | Out-Null
 
-            # Delete from raw
             Remove-AzStorageBlob -Container $rawContainer -Blob $pb.Name `
                 -Context $ctx -Force | Out-Null
 
