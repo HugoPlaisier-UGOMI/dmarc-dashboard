@@ -1,41 +1,64 @@
 # DMARC Dashboard on Azure
 
-Fully serverless, event-driven DMARC aggregate report dashboard with Entra ID
-authentication. Drop reports in a shared mailbox, Logic App saves attachments
-to blob storage, Function rebuilds an HTML dashboard, another Function serves
-it behind Easy Auth. Target cost: **< €0.10/month**.
+Serverless DMARC aggregate report dashboard with Entra ID authentication.
+Reports flow in via a shared mailbox, get parsed automatically, and are
+visualized in a self-updating HTML dashboard — all for under €2.50/month.
+
+![Dashboard preview](docs/images/dashboard-preview.png)
+
+## What it does
+
+- **Ingests** DMARC aggregate reports (XML, ZIP, GZ) from a shared M365 mailbox via Logic App
+- **Parses** reports per RFC 7489: DMARC compliance = aligned DKIM pass OR aligned SPF pass
+- **Visualizes** compliance in an HTML dashboard with:
+  - Summary cards (total, compliant, failed, rate, Azure cost)
+  - Last 7 days bar chart (stacked: compliant + non-compliant)
+  - Domain overview with pie charts (message distribution + per-domain compliance)
+  - Last 12 months bar chart
+  - Source IP table with reverse DNS hostnames (scrollable)
+  - Compliance by Header-From domain
+  - Per-domain detail cards: DMARC compliance, SPF alignment, DKIM alignment percentages with progress bars
+  - Live SPF and DMARC DNS record display per domain
+  - Reporting organisations overview
+  - Top 100 non-compliant rows with full detail
+- **Authenticates** via Entra ID Easy Auth — only assigned users can access
+- **Archives** processed reports to `archive/YYYY/` folders automatically
+- **Deploys** via GitHub Actions with OIDC federated credentials (no secrets)
 
 ## Architecture
 
 ```
   Shared mailbox (M365)
-        │  new mail w/ attachment
+        │  new mail (polled every 15 min)
         ▼
   Logic App (Consumption)           [system MI]
-        │  save attachment
+        │  base64ToBinary → save attachment
         ▼
-  Storage ── raw/        (xml / gz / zip)
-        │  blob trigger
+  Storage Account ── raw/           (xml / gz / zip landing zone)
+        │
+        │  timer trigger (every 4 hours)
         ▼
   ProcessDmarc Function             [system MI]
-        │  parse + regenerate HTML
+        │  parse all blobs (raw + archive)
+        │  reverse DNS, DNS record lookups
+        │  Azure Cost Management query
+        │  generate HTML dashboard
+        │  archive processed blobs to archive/YYYY/
         ▼
-  Storage ── dashboard/index.html   (private)
+  Storage Account ── dashboard/index.html (private)
         ▲
-        │  read on request
+        │  HTTP request
   Dashboard Function (HTTP)         [system MI]
         ▲
-        │  authenticated request
-  Easy Auth V2                       ── Entra ID tenant
+        │  Entra ID login
+  Easy Auth V2
         ▲
-        │  https://<func>.azurewebsites.net/api/dashboard
-        │
-      Browser
+  Browser ── https://<func>.azurewebsites.net/api/dashboard
 ```
 
-One storage account, one Function App, two functions. All auth via managed
-identities on the Azure side and Easy Auth V2 for browser access. Storage
-has no public access; there's no `$web` static website container.
+One storage account, one Function App (Windows Consumption, PowerShell 7.4,
+64-bit), two functions, one Logic App. All data access via managed identity.
+Storage has no public access.
 
 ## Repository layout
 
@@ -43,119 +66,107 @@ has no public access; there's no `$web` static website container.
 infra/
   main.bicep                         # Storage, Function App, App Insights, Easy Auth, RBAC
 function/
-  host.json
+  host.json                          # Functions runtime config, managed dependencies
   profile.ps1                        # Connect-AzAccount -Identity on cold start
   requirements.psd1                  # Az.Accounts + Az.Storage
   ProcessDmarc/
-    function.json                    # Blob trigger on raw/{name}
-    run.ps1                          # Parser + HTML generator
+    function.json                    # Timer trigger (every 4 hours)
+    run.ps1                          # Parser, charts, DNS lookups, cost query, HTML generator
   Dashboard/
     function.json                    # HTTP trigger, route: /api/dashboard
-    run.ps1                          # Reads blob + returns HTML
+    run.ps1                          # Reads dashboard blob, serves HTML with Easy Auth identity
 logicapp/
-  SETUP.md                           # Portal click-ops guide for the mailbox trigger
+  SETUP.md                           # Portal setup guide for the mailbox trigger
 docs/
-  ENTRA-AUTH.md                      # Entra app registration + Easy Auth wiring
+  ENTRA-AUTH.md                      # Entra app registration + Easy Auth setup
   GITHUB-SETUP.md                    # First-time GitHub + OIDC federated credential setup
+  images/                            # Dashboard screenshot(s)
 .github/workflows/
-  deploy.yml                         # Bicep + Function publish on push to main
-.gitignore
+  deploy.yml                         # Bicep + Function publish on push to main (OIDC auth)
 ```
 
-## Deploy — two paths
+## Prerequisites
 
-You can deploy manually (az CLI) or via GitHub Actions. Recommended:
-do a first manual deploy to shake things out, then set up GitHub for
-everything after that.
+- Azure subscription with Owner or Contributor + User Access Administrator on a resource group
+- M365 shared mailbox for receiving DMARC reports
+- GitHub account (for CI/CD)
+- Local tools: Azure CLI, Azure Functions Core Tools v4, Git, GitHub CLI
 
-### Path A: Manual (first-time or quick iterations)
+## Deploy
 
-**Stage 1 — infra without auth**
+### 1. Infrastructure (Bicep)
 
 ```powershell
-$rg  = 'rg-dmarc'
-$loc = 'westeurope'
-
-az group create -n $rg -l $loc
+az group create -n rg-dmarc -l westeurope
 
 $me = az ad signed-in-user show --query id -o tsv
-az deployment group create -g $rg -f infra/main.bicep `
+az deployment group create -g rg-dmarc -f infra/main.bicep `
   -p namePrefix=dmarc adminPrincipalId=$me
 ```
 
-Note the outputs: `functionAppName`, `functionAppHostname`, `dashboardUrl`.
-
-**Stage 2 — function code**
+### 2. Function code
 
 ```powershell
 cd function
 func azure functionapp publish <functionAppName> --powershell
-cd ..
 ```
 
-First cold start installs Az modules via managed dependencies (~2-3 min).
+First cold start takes 2-3 minutes (managed dependency install for Az modules).
 
-**Stage 3 — Logic App**
+### 3. Logic App
 
-Follow [`logicapp/SETUP.md`](logicapp/SETUP.md). About 3 minutes of clicking.
+Follow [logicapp/SETUP.md](logicapp/SETUP.md). Key detail: use
+`base64ToBinary(items('For_each')?['ContentBytes'])` as the blob content
+expression — without this, attachments are stored as base64 text instead of binary.
 
-**Stage 4 — Entra ID app registration + Easy Auth**
+### 4. Entra ID authentication
 
-Follow [`docs/ENTRA-AUTH.md`](docs/ENTRA-AUTH.md). Creates the app reg,
-sets the client secret, re-runs Bicep with `entraClientId` to flip auth on.
+Follow [docs/ENTRA-AUTH.md](docs/ENTRA-AUTH.md) to create an app registration
+and enable Easy Auth on the Function App.
 
-**Stage 5 — Test**
+### 5. GitHub Actions (optional)
 
-Email a DMARC report to the shared mailbox, wait ~1 minute, browse to the
-`dashboardUrl`. You should hit an Entra login, sign in, and see your data.
+Follow [docs/GITHUB-SETUP.md](docs/GITHUB-SETUP.md) for OIDC federated
+credentials and automatic deploys on `git push`.
 
-### Path B: GitHub Actions (ongoing)
+## Cost
 
-After the first manual deploy, follow [`docs/GITHUB-SETUP.md`](docs/GITHUB-SETUP.md)
-to push this folder to a GitHub repo and wire up OIDC federated
-credentials. From then on, `git push` deploys.
+Typical monthly cost: **€1.50 – €2.50**
 
-The workflow in `.github/workflows/deploy.yml`:
-1. Logs into Azure via OIDC (no secrets)
-2. Deploys `infra/main.bicep` with `entraClientId` from GitHub secrets
-3. Publishes the function code with Functions Core Tools
-4. Writes a summary with the dashboard URL
+| Component | Cost driver | Typical |
+|---|---|---|
+| Storage | File share (Function content) + blob transactions | ~€0.80 |
+| Logic App | Trigger polls (every 15 min) + actions per email | ~€0.60 |
+| Function App | Consumption plan, 6 runs/day × ~30s each | ~€0.00 |
+| App Insights | Telemetry ingestion (first 5 GB free) | ~€0.00 |
 
-## Operations
+The dashboard shows live Azure costs for the resource group via the Cost
+Management API. Requires `Cost Management Reader` role on the Function App MI.
 
-### Cost monitoring
+## Colorblind accessibility
 
-Set a €5/month budget on `rg-dmarc`. That's >50x your expected spend.
+The dashboard uses a colorblind-safe palette throughout:
+- Compliant: teal-green (`#0a7d4f`)
+- Non-compliant: Wong blue (`#0072B2`)
+- No red/green distinction anywhere
 
-### Retention
+## Key design decisions
 
-Old raw XMLs accumulate. Add a lifecycle rule to delete blobs in `raw/`
-older than 365 days. Reports are tiny so this is cosmetic, not cost-driven.
+- **Timer trigger instead of blob trigger**: blob triggers on Windows
+  Consumption go to sleep after idle periods. A 4-hourly timer is reliable
+  and keeps the host warm enough to respond quickly.
+- **Connection string for AzureWebJobsStorage**: identity-based
+  AzureWebJobsStorage caused deployment issues on Windows Consumption.
+  The connection string is used only for Functions runtime state; actual
+  data access (raw, dashboard, archive blobs) uses managed identity.
+- **Full re-scan on every run**: ProcessDmarc reads all blobs from both
+  `raw/` and `archive/` on every trigger. At typical DMARC volumes (a few
+  reports/day, KB-sized) this is trivial. For very high volumes, consider
+  switching to a database for parsed records.
+- **DNS lookups via Google DNS-over-HTTPS**: `Resolve-DnsName` is not
+  available on Azure Functions' sandboxed Windows environment. Google's
+  public DNS JSON API (`dns.google/resolve`) works everywhere.
 
-### Secret rotation
+## License
 
-- **Easy Auth client secret** expires in 2 years (see `docs/ENTRA-AUTH.md`).
-  Set a calendar reminder.
-- **GitHub → Azure OIDC federated credential** never expires. No rotation
-  needed.
-
-### Switching to Event Grid blob trigger (lower latency)
-
-Default blob trigger polls; upgrade to Event Grid for near-instant firing.
-Not worth it for daily DMARC reports.
-
-## Why this stack vs alternatives
-
-- **App Service + Easy Auth**: B1 ≈ €13/mo for runtime you don't need.
-- **Static Web Apps Standard with Entra**: clean, ~€9/mo, would require
-  porting the parser to a Node/Python function since SWA Managed Functions
-  don't support PowerShell.
-- **Private endpoint + vWAN**: elegant but locks the dashboard to internal
-  network only and costs ~€7/mo for the endpoint. Easy Auth works over
-  plain internet with the same security guarantees for this use case.
-- **Logic App Standard only**: can't parse gzipped XML cleanly without
-  expensive inline code actions; worse, ~€150/mo baseline.
-
-<!-- Deployed via GitHub Actions -->
-
-<!-- Deployed via GitHub Actions -->
+MIT
