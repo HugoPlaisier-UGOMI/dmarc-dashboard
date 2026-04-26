@@ -100,39 +100,55 @@ function Get-MonthBuckets {
 #region --- Charts ---
 function New-BarChart {
     param([Parameter(Mandatory)][object[]]$Buckets,[int]$Width=720,[int]$Height=280)
-    $mt=30;$mb=50;$ml=45;$mr=20;$cw=$Width-$ml-$mr;$ch=$Height-$mt-$mb
+    $mt=30; $mb=50; $ml=45; $mr=20
+    $cw=$Width-$ml-$mr; $ch=$Height-$mt-$mb
+    $baseline=$mt+$ch
+
     $totals=$Buckets|ForEach-Object{$_.Compliant+$_.Failed}
     $maxT=($totals|Measure-Object -Maximum).Maximum
     if(-not $maxT -or $maxT-eq0){$maxT=4}
-    $aM=[Math]::Ceiling($maxT/4)*4
-    $sw=[Math]::Round($cw/$Buckets.Count,2)
-    $bw=[int][Math]::Round([Math]::Min(60,$sw*0.65))
-    $bo=[int][Math]::Round(($sw-$bw)/2)
+    $axisMax=[Math]::Ceiling($maxT/4)*4
+
+    $slotW=[double]($cw/$Buckets.Count)
+    $barW=[int][Math]::Min(60,[int]($slotW*0.65))
+    $barOff=[int](($slotW-$barW)/2)
+
     $sb=New-Object System.Text.StringBuilder
     [void]$sb.Append("<svg viewBox='0 0 $Width $Height' xmlns='http://www.w3.org/2000/svg' style='font-family:-apple-system,Segoe UI,Roboto,sans-serif;width:100%;max-width:${Width}px;display:block'>")
+
     for($g=1;$g-le4;$g++){
-        $y=[int][Math]::Round($mt+($ch*(1-$g/4))); $tv=[int]($aM*$g/4)
-        [void]$sb.Append("<line x1='$ml' y1='$y' x2='$($ml+$cw)' y2='$y' stroke='#e6ecf4' stroke-width='1'/>")
-        [void]$sb.Append("<text x='$($ml-6)' y='$($y+3)' text-anchor='end' font-size='10' fill='#5b6b7d'>$tv</text>")
+        $gy=[int]($baseline-$ch*$g/4)
+        $tv=[int]($axisMax*$g/4)
+        [void]$sb.Append("<line x1='$ml' y1='$gy' x2='$($ml+$cw)' y2='$gy' stroke='#e6ecf4' stroke-width='1'/>")
+        [void]$sb.Append("<text x='$($ml-6)' y='$($gy+3)' text-anchor='end' font-size='10' fill='#5b6b7d'>$tv</text>")
     }
-    [void]$sb.Append("<text x='$($ml-6)' y='$($mt+$ch+3)' text-anchor='end' font-size='10' fill='#5b6b7d'>0</text>")
-    [void]$sb.Append("<line x1='$ml' y1='$($mt+$ch)' x2='$($ml+$cw)' y2='$($mt+$ch)' stroke='#dde3ec' stroke-width='1'/>")
+    [void]$sb.Append("<text x='$($ml-6)' y='$($baseline+3)' text-anchor='end' font-size='10' fill='#5b6b7d'>0</text>")
+    [void]$sb.Append("<line x1='$ml' y1='$baseline' x2='$($ml+$cw)' y2='$baseline' stroke='#dde3ec' stroke-width='1'/>")
+
     for($i=0;$i-lt$Buckets.Count;$i++){
-        $b=$Buckets[$i]; $total=$b.Compliant+$b.Failed
-        $x=[int][Math]::Round($ml+($i*$sw)+$bo)
-        $cH=[int][Math]::Round($(if($aM-gt0){($b.Compliant/$aM)*$ch}else{0}))
-        $fH=[int][Math]::Round($(if($aM-gt0){($b.Failed/$aM)*$ch}else{0}))
-        $cY=$mt+$ch-$cH; $fY=$cY-$fH
-        $xc=[int][Math]::Round($x+$bw/2)
-        if($b.Compliant-gt0){[void]$sb.Append("<rect x='$x' y='$cY' width='$bw' height='$cH' fill='#0a7d4f'/>")}
-        if($b.Failed-gt0){[void]$sb.Append("<rect x='$x' y='$fY' width='$bw' height='$fH' fill='#0072B2'/>")}
-        if($total-gt0){[void]$sb.Append("<text x='$xc' y='$($fY-5)' text-anchor='middle' font-size='11' font-weight='600' fill='#1c2733'>$total</text>")}
-        [void]$sb.Append("<text x='$xc' y='$($mt+$ch+16)' text-anchor='middle' font-size='11' fill='#1c2733'>$($b.Label)</text>")
-        [void]$sb.Append("<text x='$xc' y='$($mt+$ch+29)' text-anchor='middle' font-size='9' fill='#5b6b7d'>$($b.SubLabel)</text>")
+        $bk=$Buckets[$i]
+        $comp=[int]$bk.Compliant
+        $fail=[int]$bk.Failed
+        $total=$comp+$fail
+
+        $bx=[int]($ml+$i*$slotW+$barOff)
+        $bcx=[int]($bx+$barW/2)
+
+        $compH=[int]($comp*$ch/$axisMax)
+        $failH=[int]($fail*$ch/$axisMax)
+
+        $compY=$baseline-$compH
+        $failY=$compY-$failH
+
+        if($comp-gt0){[void]$sb.Append("<rect x='$bx' y='$compY' width='$barW' height='$compH' fill='#0a7d4f'/>")}
+        if($fail-gt0){[void]$sb.Append("<rect x='$bx' y='$failY' width='$barW' height='$failH' fill='#0072B2'/>")}
+        if($total-gt0){[void]$sb.Append("<text x='$bcx' y='$($failY-5)' text-anchor='middle' font-size='11' font-weight='600' fill='#1c2733'>$total</text>")}
+        [void]$sb.Append("<text x='$bcx' y='$($baseline+16)' text-anchor='middle' font-size='11' fill='#1c2733'>$($bk.Label)</text>")
+        [void]$sb.Append("<text x='$bcx' y='$($baseline+29)' text-anchor='middle' font-size='9' fill='#5b6b7d'>$($bk.SubLabel)</text>")
     }
-    $lx=$Width-$mr-180;$ly=14
-    [void]$sb.Append("<rect x='$lx' y='$($ly-9)' width='11' height='11' fill='#0a7d4f'/><text x='$($lx+16)' y='$ly' font-size='11' fill='#5b6b7d'>Compliant</text>")
-    [void]$sb.Append("<rect x='$($lx+92)' y='$($ly-9)' width='11' height='11' fill='#0072B2'/><text x='$($lx+108)' y='$ly' font-size='11' fill='#5b6b7d'>Non-compliant</text>")
+    $lx=$Width-$mr-180
+    [void]$sb.Append("<rect x='$lx' y='5' width='11' height='11' fill='#0a7d4f'/><text x='$($lx+16)' y='14' font-size='11' fill='#5b6b7d'>Compliant</text>")
+    [void]$sb.Append("<rect x='$($lx+92)' y='5' width='11' height='11' fill='#0072B2'/><text x='$($lx+108)' y='14' font-size='11' fill='#5b6b7d'>Non-compliant</text>")
     [void]$sb.Append("</svg>"); return $sb.ToString()
 }
 
