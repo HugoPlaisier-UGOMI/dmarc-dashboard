@@ -4,7 +4,7 @@ Serverless DMARC aggregate report dashboard with Entra ID authentication.
 Reports flow in via a shared mailbox, get parsed automatically, and are
 visualized in a self-updating HTML dashboard — all for under €2.50/month.
 
-![Dashboard preview](docs/images/dashboard-preview.png)
+![Dashboard preview](docs/images/dashboard-preview.jpeg)
 
 ## What it does
 
@@ -170,3 +170,4 @@ The dashboard uses a colorblind-safe palette throughout:
 ## License
 
 MIT
+
