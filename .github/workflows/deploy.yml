@@ -66,31 +66,36 @@ jobs:
           func azure functionapp publish ${{ steps.bicep.outputs.functionAppName }} --powershell
 
       - name: Install Az modules on server via Kudu
+        shell: pwsh
         run: |
-          FUNC_NAME="${{ steps.bicep.outputs.functionAppName }}"
-          RG="${{ env.AZURE_RESOURCE_GROUP }}"
+          $funcName = "${{ steps.bicep.outputs.functionAppName }}"
+          $rg = "${{ env.AZURE_RESOURCE_GROUP }}"
           
-          # Get publishing credentials
-          USER=$(az webapp deployment list-publishing-profiles -g $RG -n $FUNC_NAME \
-            --query "[?publishMethod=='MSDeploy'].userName | [0]" -o tsv)
-          PASS=$(az webapp deployment list-publishing-profiles -g $RG -n $FUNC_NAME \
-            --query "[?publishMethod=='MSDeploy'].userPWD | [0]" -o tsv)
-          AUTH=$(echo -n "$USER:$PASS" | base64)
+          # Wait for SCM site to be ready after publish
+          Write-Host "Waiting 30s for SCM site..."
+          Start-Sleep 30
           
-          echo "Installing Az.Accounts..."
-          curl -sf -X POST "https://$FUNC_NAME.scm.azurewebsites.net/api/command" \
-            -H "Authorization: Basic $AUTH" \
-            -H "Content-Type: application/json" \
-            -d '{"command":"powershell -c \"Save-Module Az.Accounts -Path D:\\home\\site\\wwwroot\\Modules -Force -Repository PSGallery\"","dir":"."}'
+          $creds = az webapp deployment list-publishing-profiles -g $rg -n $funcName `
+            --query "[?publishMethod=='MSDeploy'] | [0]" | ConvertFrom-Json
+          $pair = "$($creds.userName):$($creds.userPWD)"
+          $auth = 'Basic ' + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($pair))
+          $headers = @{ Authorization = $auth; 'Content-Type' = 'application/json' }
           
-          echo "Installing Az.Storage..."
-          curl -sf -X POST "https://$FUNC_NAME.scm.azurewebsites.net/api/command" \
-            -H "Authorization: Basic $AUTH" \
-            -H "Content-Type: application/json" \
-            -d '{"command":"powershell -c \"Save-Module Az.Storage -Path D:\\home\\site\\wwwroot\\Modules -Force -Repository PSGallery\"","dir":"."}'
+          Write-Host "Installing Az.Accounts..."
+          $cmd1 = @{ command = 'powershell -c "Save-Module Az.Accounts -Path D:\home\site\wwwroot\Modules -Force -Repository PSGallery; Write-Output DONE"'; dir = '.' } | ConvertTo-Json
+          $r1 = Invoke-RestMethod -Uri "https://$funcName.scm.azurewebsites.net/api/command" -Method Post -Headers $headers -Body $cmd1
+          Write-Host "Az.Accounts: $($r1.Output)"
+          if ($r1.Error) { Write-Warning "Az.Accounts errors: $($r1.Error)" }
           
-          echo "Modules installed. Restarting..."
-          az functionapp restart -g $RG -n $FUNC_NAME
+          Write-Host "Installing Az.Storage..."
+          $cmd2 = @{ command = 'powershell -c "Save-Module Az.Storage -Path D:\home\site\wwwroot\Modules -Force -Repository PSGallery; Write-Output DONE"'; dir = '.' } | ConvertTo-Json
+          $r2 = Invoke-RestMethod -Uri "https://$funcName.scm.azurewebsites.net/api/command" -Method Post -Headers $headers -Body $cmd2
+          Write-Host "Az.Storage: $($r2.Output)"
+          if ($r2.Error) { Write-Warning "Az.Storage errors: $($r2.Error)" }
+          
+          Write-Host "Restarting Function App..."
+          az functionapp restart -g $rg -n $funcName
+          Write-Host "Done."
 
       - name: Summary
         run: |
