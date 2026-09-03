@@ -219,7 +219,7 @@ function New-HtmlReport {
 
     $nowR=[TimeZoneInfo]::ConvertTimeFromUtc([DateTime]::UtcNow,$amsZone)
     $alR=if($amsZone.IsDaylightSavingTime($nowR)){'CEST'}else{'CET'}
-    $generated=$nowR.ToString('yyyy-MM-dd HH:mm')+" $alR"
+    $generated=$nowR.ToString('dd-MM-yyyy HH:mm')+" $alR"
     $rangeMin=($Rows.BeginUtc|Sort-Object|Select-Object -First 1)
     $rangeMax=($Rows.EndUtc|Sort-Object -Descending|Select-Object -First 1)
     $statusColor=if($compliancePct-ge95){'#0a7d4f'}elseif($compliancePct-ge80){'#1f6feb'}else{'#0072B2'}
@@ -309,7 +309,7 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
 .dns-value{font-size:12px;color:var(--ink);background:#f0f4fa;padding:6px 10px;border-radius:6px;word-break:break-all;display:block}
 </style></head><body>
 <h1>DMARC Compliance Dashboard</h1>
-<div class="sub">Last updated $generated &middot; Range: $($rangeMin.ToString('yyyy-MM-dd')) &rarr; $($rangeMax.ToString('yyyy-MM-dd')) &middot; $($Rows.Count) record rows from $($reporters.Count) reporting organisations</div>
+<div class="sub">Last updated $generated &middot; Range: $($rangeMin.ToString('dd-MM-yyyy')) &rarr; $($rangeMax.ToString('dd-MM-yyyy')) &middot; $($Rows.Count) record rows from $($reporters.Count) reporting organisations</div>
 <div class="cards">
 <div class="card"><div class="label">Total messages</div><div class="value">$($totalMsgs.ToString('N0'))</div></div>
 <div class="card"><div class="label">DMARC compliant</div><div class="value ok">$($compliantMsgs.ToString('N0'))</div></div>
