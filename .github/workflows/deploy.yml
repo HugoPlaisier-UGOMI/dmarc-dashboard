@@ -9,7 +9,6 @@ on:
       - '.github/workflows/**'
   workflow_dispatch:
 
-# OIDC federated credentials need id-token: write
 permissions:
   id-token: write
   contents: read
@@ -66,10 +65,35 @@ jobs:
         run: |
           func azure functionapp publish ${{ steps.bicep.outputs.functionAppName }} --powershell
 
+      - name: Install Az modules on server via Kudu
+        run: |
+          FUNC_NAME="${{ steps.bicep.outputs.functionAppName }}"
+          RG="${{ env.AZURE_RESOURCE_GROUP }}"
+          
+          # Get publishing credentials
+          USER=$(az webapp deployment list-publishing-profiles -g $RG -n $FUNC_NAME \
+            --query "[?publishMethod=='MSDeploy'].userName | [0]" -o tsv)
+          PASS=$(az webapp deployment list-publishing-profiles -g $RG -n $FUNC_NAME \
+            --query "[?publishMethod=='MSDeploy'].userPWD | [0]" -o tsv)
+          AUTH=$(echo -n "$USER:$PASS" | base64)
+          
+          echo "Installing Az.Accounts..."
+          curl -sf -X POST "https://$FUNC_NAME.scm.azurewebsites.net/api/command" \
+            -H "Authorization: Basic $AUTH" \
+            -H "Content-Type: application/json" \
+            -d '{"command":"powershell -c \"Save-Module Az.Accounts -Path D:\\home\\site\\wwwroot\\Modules -Force -Repository PSGallery\"","dir":"."}'
+          
+          echo "Installing Az.Storage..."
+          curl -sf -X POST "https://$FUNC_NAME.scm.azurewebsites.net/api/command" \
+            -H "Authorization: Basic $AUTH" \
+            -H "Content-Type: application/json" \
+            -d '{"command":"powershell -c \"Save-Module Az.Storage -Path D:\\home\\site\\wwwroot\\Modules -Force -Repository PSGallery\"","dir":"."}'
+          
+          echo "Modules installed. Restarting..."
+          az functionapp restart -g $RG -n $FUNC_NAME
+
       - name: Summary
         run: |
           echo "### :rocket: Deploy complete" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "Dashboard: ${{ steps.bicep.outputs.dashboardUrl }}" >> $GITHUB_STEP_SUMMARY
-
-
