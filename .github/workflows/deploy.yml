@@ -72,3 +72,4 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "Dashboard: ${{ steps.bicep.outputs.dashboardUrl }}" >> $GITHUB_STEP_SUMMARY
 
+
