@@ -65,15 +65,11 @@ jobs:
         run: |
           func azure functionapp publish ${{ steps.bicep.outputs.functionAppName }} --powershell
 
-      - name: Install Az modules on server via Kudu
+      - name: Clear managed dependency cache and restart
         shell: pwsh
         run: |
           $funcName = "${{ steps.bicep.outputs.functionAppName }}"
           $rg = "${{ env.AZURE_RESOURCE_GROUP }}"
-          
-          # Wait for SCM site to be ready after publish
-          Write-Host "Waiting 30s for SCM site..."
-          Start-Sleep 30
           
           $creds = az webapp deployment list-publishing-profiles -g $rg -n $funcName `
             --query "[?publishMethod=='MSDeploy'] | [0]" | ConvertFrom-Json
@@ -81,24 +77,17 @@ jobs:
           $auth = 'Basic ' + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($pair))
           $headers = @{ Authorization = $auth; 'Content-Type' = 'application/json' }
           
-          Write-Host "Installing Az.Accounts..."
-          $cmd1 = @{ command = 'powershell -c "Save-Module Az.Accounts -Path D:\home\site\wwwroot\Modules -Force -Repository PSGallery; Write-Output DONE"'; dir = '.' } | ConvertTo-Json
-          $r1 = Invoke-RestMethod -Uri "https://$funcName.scm.azurewebsites.net/api/command" -Method Post -Headers $headers -Body $cmd1
-          Write-Host "Az.Accounts: $($r1.Output)"
-          if ($r1.Error) { Write-Warning "Az.Accounts errors: $($r1.Error)" }
+          Write-Host "Clearing managed dependency cache..."
+          $cmd = @{ command = 'if exist D:\home\data\ManagedDependencies rmdir /s /q D:\home\data\ManagedDependencies & echo CLEARED'; dir = '.' } | ConvertTo-Json
+          $r = Invoke-RestMethod -Uri "https://$funcName.scm.azurewebsites.net/api/command" -Method Post -Headers $headers -Body $cmd
+          Write-Host $r.Output
           
-          Write-Host "Installing Az.Storage..."
-          $cmd2 = @{ command = 'powershell -c "Save-Module Az.Storage -Path D:\home\site\wwwroot\Modules -Force -Repository PSGallery; Write-Output DONE"'; dir = '.' } | ConvertTo-Json
-          $r2 = Invoke-RestMethod -Uri "https://$funcName.scm.azurewebsites.net/api/command" -Method Post -Headers $headers -Body $cmd2
-          Write-Host "Az.Storage: $($r2.Output)"
-          if ($r2.Error) { Write-Warning "Az.Storage errors: $($r2.Error)" }
-          
-          Write-Host "Restarting Function App..."
+          Write-Host "Restarting to trigger fresh module install..."
           az functionapp restart -g $rg -n $funcName
-          Write-Host "Done."
 
       - name: Summary
         run: |
           echo "### :rocket: Deploy complete" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "Dashboard: ${{ steps.bicep.outputs.dashboardUrl }}" >> $GITHUB_STEP_SUMMARY
+          echo "Note: First run after deploy takes 3-5 min (module install)" >> $GITHUB_STEP_SUMMARY
