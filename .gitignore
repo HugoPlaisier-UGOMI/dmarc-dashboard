@@ -5,7 +5,6 @@ local.settings.json
 .azure/
 
 # PowerShell module cache (managed dependencies)
-Modules/
 
 # Editor
 .vscode/
