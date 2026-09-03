@@ -1,4 +1,4 @@
 @{
-    'Az.Accounts' = '3.*'
+    'Az.Accounts' = '4.*'
     'Az.Storage'  = '7.*'
 }
